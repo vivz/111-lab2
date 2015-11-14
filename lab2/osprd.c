@@ -301,7 +301,9 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 	if (cmd == OSPRDIOCACQUIRE) {
 
 			osp_spin_lock(&(d->mutex));
+			
 			my_ticket = d->ticket_head;
+
 			d->ticket_head++;
 
 			if(pid_in_list(d->read_list, current->pid) || pid_in_list(d->write_list, current->pid))
@@ -349,8 +351,9 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 			wake_up_all(&(d->blockq));
 			return 0;
 	}
-
-	} else if (cmd == OSPRDIOCTRYACQUIRE) {
+ 
+	else if (cmd == OSPRDIOCTRYACQUIRE) 
+	{
 
 		// EXERCISE: ATTEMPT to lock the ramdisk.
 		//
