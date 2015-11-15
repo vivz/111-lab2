@@ -416,7 +416,14 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 			{ 
 				if (d->ticket_tail == my_ticket) 
 				{
-					find_next_ticket(d);
+					while (1) 
+					{
+						(d->ticket_tail)++;
+						if (!ticket_list_contains(d->finished_ticket_list, d->ticket_tail)) 
+							break;
+						else 
+							remove_from_ticket_list(&(d->finished_ticket_list), d->ticket_tail);
+					};
 				}
 				else 
 				{ 
@@ -429,7 +436,14 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 			osp_spin_lock(&(d->mutex));
 			filp->f_flags |= F_OSPRD_LOCKED;
 			append_front_pid_list(&(d->write_lock_pid_list), current->pid);
-			find_next_ticket(d);
+			while (1) 
+			{
+				(d->ticket_tail)++;
+				if (!ticket_list_contains(d->finished_ticket_list, d->ticket_tail)) 
+					break;
+				else 
+					remove_from_ticket_list(&(d->finished_ticket_list), d->ticket_tail);
+			};
 			osp_spin_unlock(&(d->mutex));
 			wake_up_all(&(d->blockq)); 
 			return r;
@@ -454,7 +468,14 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 			{
 				if (d->ticket_tail == my_ticket) 
 				{
-					find_next_ticket(d);
+					while (1) 
+					{
+						(d->ticket_tail)++;
+						if (!ticket_list_contains(d->finished_ticket_list, d->ticket_tail)) 
+							break;
+						else 
+							remove_from_ticket_list(&(d->finished_ticket_list), d->ticket_tail);
+					};
 				}
 				else 
 				{
@@ -467,7 +488,14 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 			osp_spin_lock(&(d->mutex));
 			filp->f_flags |= F_OSPRD_LOCKED;
 			append_front_pid_list(&(d->read_lock_pid_list), current->pid);
-			find_next_ticket(d);
+			while (1) 
+			{
+				(d->ticket_tail)++;
+				if (!ticket_list_contains(d->finished_ticket_list, d->ticket_tail)) 
+					break;
+				else 
+					remove_from_ticket_list(&(d->finished_ticket_list), d->ticket_tail);
+			};
 			osp_spin_unlock(&(d->mutex));
 			wake_up_all(&(d->blockq)); 
 			return r;
@@ -498,7 +526,14 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 			d->ticket_head++;
 			filp->f_flags |= F_OSPRD_LOCKED;
 			append_front_pid_list(&d->write_lock_pid_list, current->pid);
-			find_next_ticket(d);
+			while (1) 
+			{
+				(d->ticket_tail)++;
+				if (!ticket_list_contains(d->finished_ticket_list, d->ticket_tail)) 
+					break;
+				else 
+					remove_from_ticket_list(&(d->finished_ticket_list), d->ticket_tail);
+			};
 			osp_spin_unlock(&(d->mutex));
 			wake_up_all(&(d->blockq));
 			return 0;
@@ -524,7 +559,14 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 			d->ticket_head++;
 			filp->f_flags |= F_OSPRD_LOCKED;
 			append_front_pid_list(&d->read_lock_pid_list, current->pid);
-			find_next_ticket(d);
+			while (1) 
+			{
+				(d->ticket_tail)++;
+				if (!ticket_list_contains(d->finished_ticket_list, d->ticket_tail)) 
+					break;
+				else 
+					remove_from_ticket_list(&(d->finished_ticket_list), d->ticket_tail);
+			};
 			osp_spin_unlock(&(d->mutex));
 			wake_up_all(&(d->blockq));
 			return r;
