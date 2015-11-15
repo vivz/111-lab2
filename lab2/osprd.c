@@ -276,17 +276,6 @@ int ticket_list_contains(struct ticket_list* list, unsigned ticket)
 	return 0;
 }
 
-void find_next_ticket(osprd_info_t *d) 
-{
-	while (1) 
-	{
-		(d->ticket_tail)++;
-		if (!ticket_list_contains(d->finished_ticket_list, d->ticket_tail)) 
-			break;
-		else 
-			remove_from_ticket_list(&(d->finished_ticket_list), d->ticket_tail);
-	}
-}
 /*
  * file2osprd(filp)
  *   Given an open file, check whether that file corresponds to an OSP ramdisk.
