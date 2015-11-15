@@ -77,26 +77,26 @@ typedef struct osprd_info {
 	                                // (nsectors * SECTOR_SIZE) bytes.
 
 	osp_spinlock_t mutex;           // Mutex for synchronizing access to
-					// this block device
+									// this block device
 
-	unsigned ticket_head;		// Currently running ticket for
-					// the device lock
+	unsigned ticket_head;			// Currently running ticket for
+									// the device lock
 
-	unsigned ticket_tail;		// Next available ticket for
-					// the device lock
+	unsigned ticket_tail;			// Next available ticket for
+									// the device lock
 
 	wait_queue_head_t blockq;       // Wait queue for tasks blocked on
-					// the device lock
+									// the device lock
 
 	struct pid_list* read_lock_pid_list;	
 	struct pid_list* write_lock_pid_list;	
 
-	struct ticket_list* exited_tickets;	
+	struct ticket_list* finished_ticket_list;	
 
 	// The following elements are used internally; you don't need
 	// to understand them.
 	struct request_queue *queue;    // The device request queue.
-	spinlock_t qlock;		// Used internally for mutual
+	spinlock_t qlock;				// Used internally for mutual
 	                                //   exclusion in the 'queue'.
 	struct gendisk *gd;             // The generic disk.
 } osprd_info_t;
@@ -276,14 +276,15 @@ int ticket_list_contains(struct ticket_list* list, unsigned ticket)
 	return 0;
 }
 
-void grant_next_alive_ticket(osprd_info_t *d) 
+void find_next_ticket(osprd_info_t *d) 
 {
-	while (++(d->ticket_tail)) 
+	while (1) 
 	{
-		if (!ticket_list_contains(d->exited_tickets, d->ticket_tail)) 
+		(d->ticket_tail)++;
+		if (!ticket_list_contains(d->finished_ticket_list, d->ticket_tail)) 
 			break;
 		else 
-			remove_from_ticket_list(&(d->exited_tickets), d->ticket_tail);
+			remove_from_ticket_list(&(d->finished_ticket_list), d->ticket_tail);
 	}
 }
 /*
@@ -407,7 +408,7 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 			}
 			osp_spin_unlock(&(d->mutex)); 
 
-			// block until a write lock can be obtained
+			// wait until a write lock can be obtained
 			r = wait_event_interruptible(d->blockq, d->ticket_tail == my_ticket &&
 							       d->write_lock_pid_list == NULL && 
 							       d->read_lock_pid_list  == NULL);
@@ -415,34 +416,31 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 			{ 
 				if (d->ticket_tail == my_ticket) 
 				{
-					grant_next_alive_ticket(d);
+					find_next_ticket(d);
 				}
 				else 
 				{ 
-					append_front_ticket_list(&(d->exited_tickets), my_ticket);
+					append_front_ticket_list(&(d->finished_ticket_list), my_ticket);
 				}
 				return r;
 			}
 
-			// grab the write lock
+			// acquire the write lock
 			osp_spin_lock(&(d->mutex));
 			filp->f_flags |= F_OSPRD_LOCKED;
 			append_front_pid_list(&(d->write_lock_pid_list), current->pid);
-			grant_next_alive_ticket(d);
+			find_next_ticket(d);
 			osp_spin_unlock(&(d->mutex));
-
-			// wake up waiting processes
 			wake_up_all(&(d->blockq)); 
-			return 0;
+			return r;
 		}
-		// request a READ lock
+		// filp not writeable, request a read lock
 		else 
 		{			
-			// get a ticket
 			osp_spin_lock(&(d->mutex));
 			my_ticket = d->ticket_head;
 			d->ticket_head++;
-			// check WRITE deadlock
+			// check for a deadlock
 			if(list_contains_pid(d->write_lock_pid_list, current->pid)||list_contains_pid(d->read_lock_pid_list, current->pid)) 
 			{
 				osp_spin_unlock(&(d->mutex));
@@ -450,53 +448,45 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 			}
 			osp_spin_unlock(&(d->mutex)); 
 
-			// block until a read lock can be obtained
-			if(wait_event_interruptible(d->blockq, d->ticket_tail == my_ticket &&
-							       d->write_lock_pid_list == NULL)) 
+			r = wait_event_interruptible(d->blockq, d->ticket_tail == my_ticket &&
+							       d->write_lock_pid_list == NULL);
+			if(r == -ERESTARTSYS) 
 			{
 				if (d->ticket_tail == my_ticket) 
 				{
-					grant_next_alive_ticket(d);
+					find_next_ticket(d);
 				}
 				else 
 				{
-					append_front_ticket_list(&(d->exited_tickets), my_ticket);
+					append_front_ticket_list(&(d->finished_ticket_list), my_ticket);
 				}
 				
-				return -ERESTARTSYS;
+				return r;
 			}
 
-			// grab the read lock
 			osp_spin_lock(&(d->mutex));
 			filp->f_flags |= F_OSPRD_LOCKED;
 			append_front_pid_list(&(d->read_lock_pid_list), current->pid);
-			grant_next_alive_ticket(d);
+			find_next_ticket(d);
 			osp_spin_unlock(&(d->mutex));
-
-			// wake up all waiting processes
 			wake_up_all(&(d->blockq)); 
-			return 0;
+			return r;
 		}
 
 	} else if (cmd == OSPRDIOCTRYACQUIRE) {
-		// like OSPRDIOACQUIRE, but return -EBUSY where OSPRDIOACQUIRE
-		// would return -EDEADLK or block
 
-		// request a WRITE lock
 		if(filp_writable)
 		{
 		   	osp_spin_lock(&(d->mutex));
-			// check for READ deadlock
-			if (list_contains_pid(d->read_lock_pid_list, current->pid)||list_contains_pid(d->write_lock_pid_list, current->pid)) 
+			if (list_contains_pid(d->read_lock_pid_list, current->pid)||
+				list_contains_pid(d->write_lock_pid_list, current->pid)) 
 			{
-		       		osp_spin_unlock(&(d->mutex));
-		       		return -EBUSY;
+	       		osp_spin_unlock(&(d->mutex));
+	       		return -EBUSY;
 			}
 
-			//get a ticket
 			my_ticket = d->ticket_head;
 
-			// check if OSPRDIOACQUIRE would block
 			if (d->ticket_tail != my_ticket ||
 			    d->write_lock_pid_list != NULL ||
 			    d->read_lock_pid_list != NULL) 
@@ -506,31 +496,24 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 			}
 		   
 			d->ticket_head++;
-			// grab the lock
 			filp->f_flags |= F_OSPRD_LOCKED;
 			append_front_pid_list(&d->write_lock_pid_list, current->pid);
-			grant_next_alive_ticket(d);
+			find_next_ticket(d);
 			osp_spin_unlock(&(d->mutex));
-
-			// wake up all waiting processes
 			wake_up_all(&(d->blockq));
 			return 0;
-	       	}
-	       	//request a READ lock
-	       	else 
-		{    
+	    }
+	    else {    
 			osp_spin_lock(&(d->mutex));
 	   
-			// check for WRITE deadlock
-		   	if (list_contains_pid(d->write_lock_pid_list, current->pid)||list_contains_pid(d->read_lock_pid_list, current->pid))
+		   	if (list_contains_pid(d->write_lock_pid_list, current->pid)||
+		   		list_contains_pid(d->read_lock_pid_list, current->pid))
 			{
 				osp_spin_unlock(&(d->mutex));
 				return -EBUSY;
 			}
-			//get a ticket
 			my_ticket = d->ticket_head;
 
-			// check if OSPRDIOACQUIRE would block
 			if (d->ticket_tail != my_ticket || 
 			    d->write_lock_pid_list != NULL) 
 			{
@@ -539,48 +522,36 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 			}
 
 			d->ticket_head++;
-			// grab the lock
 			filp->f_flags |= F_OSPRD_LOCKED;
 			append_front_pid_list(&d->read_lock_pid_list, current->pid);
-			grant_next_alive_ticket(d);
+			find_next_ticket(d);
 			osp_spin_unlock(&(d->mutex));
-
-			// wake up all waiting processes
 			wake_up_all(&(d->blockq));
-			return 0;
+			return r;
 		}
 
 	} else if (cmd == OSPRDIOCRELEASE) {
 
 		osp_spin_lock(&(d->mutex));
 
-		// if the file hasn't locked the ramdisk, invalid
 		if (!list_contains_pid(d->write_lock_pid_list, current->pid) && 
-		    !list_contains_pid(d->read_lock_pid_list, current->pid)) 
-		{
+		    !list_contains_pid(d->read_lock_pid_list, current->pid)) {
 			osp_spin_unlock(&(d->mutex));
 			return -EINVAL;
 		}
-		// if process holds a write lock, release it
-		if (list_contains_pid(d->write_lock_pid_list, current->pid)) 
-		{
+		if (list_contains_pid(d->write_lock_pid_list, current->pid)) {
 			remove_from_pid_list(&(d->write_lock_pid_list), current->pid);	
 		}
-		// if process holds a read lock, release it
-		if (list_contains_pid(d->read_lock_pid_list, current->pid)) 
-		{
+		if (list_contains_pid(d->read_lock_pid_list, current->pid)) {
 			remove_from_pid_list(&(d->read_lock_pid_list), current->pid);
 		}
 
-		// if no locks left, ramdisk is unlocked
 		if (d->read_lock_pid_list == NULL && 
-		    d->write_lock_pid_list == NULL) 
-		{
+		    d->write_lock_pid_list == NULL) {
 			filp->f_flags &= !F_OSPRD_LOCKED;
 		}
 		osp_spin_unlock(&(d->mutex));
 
-		// wake up all waiting processes
 		wake_up_all(&(d->blockq));
 		return 0;
 
@@ -602,7 +573,7 @@ static void osprd_setup(osprd_info_t *d)
 	/* Add code here if you add fields to osprd_info_t. */
 	d->read_lock_pid_list = NULL;
 	d->write_lock_pid_list = NULL;
-	d->exited_tickets = NULL;
+	d->finished_ticket_list = NULL;
 }
 
 
