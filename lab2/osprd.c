@@ -410,9 +410,10 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 			osp_spin_unlock(&(d->mutex)); 
 
 			// block until a write lock can be obtained
-			if(wait_event_interruptible(d->blockq, d->ticket_tail == my_ticket &&
+			r = wait_event_interruptible(d->blockq, d->ticket_tail == my_ticket &&
 							       d->write_lock_pids == NULL && 
-							       d->read_lock_pids  == NULL)) 
+							       d->read_lock_pids  == NULL);
+			if(r == -ERESTARTSYS) 
 			{ 
 				if (d->ticket_tail == my_ticket) 
 				{
@@ -422,7 +423,7 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 				{ 
 					add_to_ticket_list(&(d->exited_tickets), my_ticket);
 				}
-				return -ERESTARTSYS;
+				return r;
 			}
 
 			// grab the write lock
