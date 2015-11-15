@@ -331,12 +331,13 @@ static void for_each_open_file(struct task_struct *task,
  */
 static void osprd_process_request(osprd_info_t *d, struct request *req)
 {
+
+	unsigned request_type;
 	if (!blk_fs_request(req)) {
 		end_request(req, 0);
 		return;
 	}
 
-	unsigned request_type;
 
 	uint8_t *data_ptr;
 	
@@ -432,6 +433,7 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 
 	if (cmd == OSPRDIOCACQUIRE) {
 
+			int temp2;
 			osp_spin_lock(&(d->mutex));
 			
 			my_ticket= d->ticket_head;
@@ -446,7 +448,6 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 
 			osp_spin_unlock(&(d->mutex));
 
-			int temp2;
 
 			if(filp_writable)
 			{
@@ -489,19 +490,37 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
  
 	else if (cmd == OSPRDIOCTRYACQUIRE) 
 	{
+		if(filp_writable)
+		{
+			osp_spin_lock(&(d->mutex));
+			if(pid_in_list(d->read_list,current->pid) || pid_in_list(d->write_list,current->pid))
+			{
+				osp_spin_unlock(&(d->mutex));
+				return -EBUSY;
+			}
+			my_ticket = d->ticket_head;
 
-		// EXERCISE: ATTEMPT to lock the ramdisk.
-		//
-		// This is just like OSPRDIOCACQUIRE, except it should never
-		// block.  If OSPRDIOCACQUIRE would block or return deadlock,
-		// OSPRDIOCTRYACQUIRE should return -EBUSY.
-		// Otherwise, if we can grant the lock request, return 0.
+			if(d->ticket_tail != my_ticket || d->write_list != NULL || d->read_list != NULL)
+			{
+				osp_spin_unlock(&(d->mutex));
+				return -EBUSY;
+			}
 
-		// Your code here (instead of the next two lines).
+			
+			d->ticket_head++;
+			filp->f_flags |= F_OSPRD_LOCKED;
+			
+			add_to_pid_list(&d->write_list, current->pid);
+			grant_next_alive_ticket(d);
+			osp_spin_unlock(&(d->mutex));
+			wake_up_all(&(d->blockq));
+			return 0;
+		}
 		eprintk("Attempting to try acquire\n");
 		r = -ENOTTY;
 
-	} else if (cmd == OSPRDIOCRELEASE) {
+	}
+	 else if (cmd == OSPRDIOCRELEASE) {
 
 		// EXERCISE: Unlock the ramdisk.
 		//
