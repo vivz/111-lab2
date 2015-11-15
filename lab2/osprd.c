@@ -291,7 +291,7 @@ void grant_next_alive_ticket(osprd_info_t *d)
 		if(!ticket_in_list(d->exited_tickets, d->ticket_tail))
 			break;
 		else 
-			remove_from_pid_list(d->exited_tickets,d->ticket_tail);
+			remove_from_ticket_list(d->exited_tickets, d->ticket_tail);
 	}
 }
 
@@ -332,15 +332,14 @@ static void for_each_open_file(struct task_struct *task,
 static void osprd_process_request(osprd_info_t *d, struct request *req)
 {
 
+	uint8_t *data_ptr;
 	unsigned request_type;
+
 	if (!blk_fs_request(req)) {
 		end_request(req, 0);
 		return;
 	}
 
-
-	uint8_t *data_ptr;
-	
 	request_type = rq_data_dir(req);
 	
 	data_ptr = d->data + req->sector * SECTOR_SIZE;
@@ -490,6 +489,7 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
  
 	else if (cmd == OSPRDIOCTRYACQUIRE) 
 	{
+		
 		if(filp_writable)
 		{
 			osp_spin_lock(&(d->mutex));
@@ -510,26 +510,77 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 			d->ticket_head++;
 			filp->f_flags |= F_OSPRD_LOCKED;
 			
-			add_to_pid_list(&d->write_list, current->pid);
+			add_to_pid_list(d->write_list, current->pid);
 			grant_next_alive_ticket(d);
 			osp_spin_unlock(&(d->mutex));
 			wake_up_all(&(d->blockq));
 			return 0;
 		}
-		eprintk("Attempting to try acquire\n");
-		r = -ENOTTY;
+		else {
+
+			osp_spin_lock(&(d->mutex));
+			if(pid_in_list(d->read_list,current->pid) || pid_in_list(d->write_list,current->pid))
+			{
+				osp_spin_unlock(&(d->mutex));
+				return -EBUSY;
+			}
+			my_ticket = d->ticket_head;
+
+			if(d->ticket_tail != my_ticket ||  d->write_list != NULL)
+			{
+				osp_spin_unlock(&(d->mutex));
+				return -EBUSY;
+			}
+
+			
+			d->ticket_head++;
+			filp->f_flags |= F_OSPRD_LOCKED;
+			
+			add_to_pid_list(d->read_list, current->pid);
+			
+			grant_next_alive_ticket(d);
+			osp_spin_unlock(&(d->mutex));
+
+			wake_up_all(&(d->blockq));
+			return 0;
+		}
+		//eprintk("Attempting to try acquire\n");
+		//r = -ENOTTY;
 
 	}
 	 else if (cmd == OSPRDIOCRELEASE) {
+		
+		osp_spin_lock(&(d->mutex));
 
-		// EXERCISE: Unlock the ramdisk.
-		//
-		// If the file hasn't locked the ramdisk, return -EINVAL.
-		// Otherwise, clear the lock from filp->f_flags, wake up
-		// the wait queue, perform any additional accounting steps
-		// you need, and return 0.
+		// if the file hasn't locked the ramdisk, invalid
+		if (!pid_in_list(d->write_list, current->pid) && 
+		    !pid_in_list(d->read_list, current->pid)) 
+		{
+			osp_spin_unlock(&(d->mutex));
+			return -EINVAL;
+		}
+		// if process holds a write lock, release it
+		if (pid_in_list(d->write_list, current->pid)) 
+		{
+			remove_from_pid_list(d->write_list, current->pid);	
+		}
+		// if process holds a read lock, release it
+		if (pid_in_list(d->read_list, current->pid)) 
+		{
+			remove_from_pid_list(d->read_list, current->pid);
+		}
 
-		// Your code here (instead of the next line).
+		// if no locks left, ramdisk is unlocked
+		if (d->read_list == NULL && 
+		    d->write_list == NULL) 
+		{
+			filp->f_flags &= !F_OSPRD_LOCKED;
+		}
+		osp_spin_unlock(&(d->mutex));
+
+		// wake up all waiting processes
+		wake_up_all(&(d->blockq));
+		return 0;
 		r = -ENOTTY;
 
 	} else
